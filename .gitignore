@@ -1,0 +1,33 @@
+# ── Gradle ──
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# ── IDE ──
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+*.class
+out/
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── Logs ──
+*.log
+*.log.*
+
+# ── Env / secrets / TLS ──
+.env
+*.env.local
+*.pem
+*.key
+*.crt

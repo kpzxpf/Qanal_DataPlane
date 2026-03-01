@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package qanal.control;
+
+option java_package = "com.qanal.control.proto";
+option java_multiple_files = true;
+option java_outer_classname = "TransferReportProto";
+
+// ═══════════════════════════════════════════════
+//  Data Plane → Control Plane
+// ═══════════════════════════════════════════════
+
+service TransferReportService {
+
+    // Agent reports a completed chunk
+    rpc ReportChunkCompleted (ChunkCompletedRequest) returns (ChunkCompletedResponse);
+
+    // Agent reports final file checksum for verification
+    rpc ReportTransferFinalized (TransferFinalizedRequest) returns (TransferFinalizedResponse);
+
+    // Agent streams real-time progress updates
+    rpc StreamProgress (stream ProgressUpdate) returns (ProgressAck);
+
+    // Agent reports an error
+    rpc ReportError (TransferErrorRequest) returns (TransferErrorResponse);
+
+    // Agent registers itself on startup
+    rpc RegisterAgent (AgentRegistration) returns (AgentRegistrationResponse);
+
+    // Agent sends periodic heartbeat
+    rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// ── Chunk completion ──
+
+message ChunkCompletedRequest {
+    string transfer_id = 1;
+    int32  chunk_index = 2;
+    string checksum = 3;              // xxHash64 of chunk data
+    int64  bytes_transferred = 4;
+    double throughput_bps = 5;
+    int64  duration_ms = 6;
+}
+
+message ChunkCompletedResponse {
+    bool   accepted = 1;
+    string message = 2;               // error details if not accepted
+}
+
+// ── Transfer finalization ──
+
+message TransferFinalizedRequest {
+    string transfer_id = 1;
+    string final_checksum = 2;        // xxHash64 of entire file
+}
+
+message TransferFinalizedResponse {
+    bool   verified = 1;
+    string status = 2;
+}
+
+// ── Progress streaming ──
+
+message ProgressUpdate {
+    string transfer_id = 1;
+    int64  bytes_transferred = 2;
+    double current_throughput_bps = 3;
+    int32  active_streams = 4;
+    double packet_loss_rate = 5;
+    int64  timestamp_ms = 6;
+}
+
+message ProgressAck {
+    bool should_pause = 1;           // control plane can signal pause
+    bool should_cancel = 2;          // control plane can signal cancel
+}
+
+// ── Error reporting ──
+
+message TransferErrorRequest {
+    string transfer_id = 1;
+    int32  chunk_index = 2;          // -1 if not chunk-specific
+    string error_code = 3;
+    string error_message = 4;
+    bool   is_retryable = 5;
+}
+
+message TransferErrorResponse {
+    string action = 1;               // RETRY, ABORT, SKIP
+    int32  retry_delay_ms = 2;
+}
+
+// ── Agent registration ──
+
+message AgentRegistration {
+    string agent_id = 1;
+    string region = 2;
+    string host = 3;
+    int32  quic_port = 4;
+    int64  available_bandwidth_bps = 5;
+    int64  available_disk_bytes = 6;
+}
+
+message AgentRegistrationResponse {
+    bool   accepted = 1;
+    string assigned_node_id = 2;
+    map<string, string> config = 3;  // runtime config from control plane
+}
+
+// ── Heartbeat ──
+
+message HeartbeatRequest {
+    string agent_id = 1;
+    int32  active_transfers = 2;
+    double cpu_usage = 3;
+    double memory_usage = 4;
+    int64  bytes_in_flight = 5;
+}
+
+message HeartbeatResponse {
+    bool alive = 1;
+}
