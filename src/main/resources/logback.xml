@@ -1,15 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <configuration>
-    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
-    </appender>
 
-    <logger name="com.qanal" level="DEBUG"/>
-    <logger name="io.netty" level="INFO"/>
-    <logger name="io.grpc" level="INFO"/>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
 
-    <root level="INFO">
-        <appender-ref ref="CONSOLE"/>
-    </root>
+  <!-- Quieten noisy Netty internals in production -->
+  <logger name="io.netty"                         level="WARN"/>
+  <logger name="io.netty.incubator.codec.quic"    level="INFO"/>
+  <logger name="io.grpc"                          level="WARN"/>
+  <logger name="quic.connections"                 level="INFO"/>
+
+  <!-- Application code -->
+  <logger name="com.qanal" level="INFO"/>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+
 </configuration>

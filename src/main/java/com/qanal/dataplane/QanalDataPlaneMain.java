@@ -1,54 +1,143 @@
 package com.qanal.dataplane;
 
-import com.typesafe.config.Config;
+import com.qanal.dataplane.adapter.in.quic.QuicServerBootstrap;
+import com.qanal.dataplane.adapter.out.grpc.ControlPlaneGrpcAdapter;
+import com.qanal.dataplane.application.service.TransferEngine;
+import com.qanal.dataplane.infrastructure.config.DataPlaneConfig;
+import com.qanal.dataplane.infrastructure.metrics.PrometheusServer;
 import com.typesafe.config.ConfigFactory;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.binder.jvm.ClassLoaderMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmGcMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmMemoryMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmThreadMetrics;
+import io.micrometer.core.instrument.binder.system.ProcessorMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
 /**
- * Qanal Data Plane — QUIC-based file transfer engine.
+ * Qanal Data Plane — Composition Root.
  *
- * This is NOT a Spring application. It runs as a standalone Netty server
- * for maximum I/O performance with zero-copy transfers.
- *
- * Connects to Control Plane via gRPC to receive transfer commands
- * and report progress/completion.
+ * <p>Wired under new package structure.
  */
 public class QanalDataPlaneMain {
 
     private static final Logger log = LoggerFactory.getLogger(QanalDataPlaneMain.class);
 
-    public static void main(String[] args) {
-        Config config = ConfigFactory.load().getConfig("qanal");
+    public static void main(String[] args) throws Exception {
+        // ── 1. Config ────────────────────────────────────────────────────────
+        DataPlaneConfig cfg = DataPlaneConfig.from(ConfigFactory.load().getConfig("qanal"));
 
-        log.info("=== Qanal Data Plane ===");
-        log.info("Agent ID:    {}", config.getString("agent.id"));
-        log.info("Region:      {}", config.getString("agent.region"));
-        log.info("QUIC port:   {}", config.getInt("quic.port"));
-        log.info("Control:     {}:{}",
-                config.getString("control-plane.host"),
-                config.getInt("control-plane.grpc-port"));
+        log.info("╔══════════════════════════════════════╗");
+        log.info("║       Qanal Data Plane v0.2          ║");
+        log.info("╚══════════════════════════════════════╝");
+        log.info("Agent:       {} / {}", cfg.agent().id(), cfg.agent().region());
+        log.info("QUIC:        {}:{}", cfg.quic().host(), cfg.quic().port());
+        log.info("Control:     {}:{}", cfg.controlPlane().host(), cfg.controlPlane().grpcPort());
 
-        // TODO: Phase 1 implementation
-        // 1. Initialize gRPC client → Control Plane
-        // 2. Register agent via RegisterAgent RPC
-        // 3. Start QUIC server (Netty + netty-incubator-codec-quic)
-        // 4. Start heartbeat scheduler
-        // 5. Listen for incoming transfer connections
+        // ── 2. Metrics ───────────────────────────────────────────────────────
+        var prometheusServer = new PrometheusServer();
+        MeterRegistry metrics = prometheusServer.getRegistry();
 
-        log.info("Data Plane started. Waiting for transfers...");
+        new ClassLoaderMetrics().bindTo(metrics);
+        new JvmMemoryMetrics().bindTo(metrics);
+        new JvmGcMetrics().bindTo(metrics);
+        new JvmThreadMetrics().bindTo(metrics);
+        new ProcessorMetrics().bindTo(metrics);
 
-        // Keep alive
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+        if (cfg.metrics().enabled()) {
+            prometheusServer.start(cfg.metrics().prometheusPort());
+        }
+
+        // ── 3. gRPC adapter ──────────────────────────────────────────────────
+        var cpAdapter = new ControlPlaneGrpcAdapter(cfg.controlPlane(), cfg.agent());
+
+        // ── 4. Transfer engine ───────────────────────────────────────────────
+        var engine = new TransferEngine(cpAdapter, cfg, metrics);
+
+        // ── 5. QUIC server ───────────────────────────────────────────────────
+        var quicServer = new QuicServerBootstrap(cfg, engine);
+        quicServer.start();
+
+        // ── 6. Agent registration ────────────────────────────────────────────
+        cpAdapter.registerAgent(
+                resolvePublicHost(cfg),
+                cfg.quic().port(),
+                10_000_000_000L,
+                availableDisk()
+        );
+
+        // ── 7. Heartbeat scheduler ───────────────────────────────────────────
+        ScheduledExecutorService scheduler =
+                Executors.newSingleThreadScheduledExecutor(
+                        r -> Thread.ofVirtual().name("heartbeat").unstarted(r));
+
+        scheduler.scheduleAtFixedRate(
+                () -> sendHeartbeat(cpAdapter, engine),
+                cfg.controlPlane().heartbeatIntervalSec(),
+                cfg.controlPlane().heartbeatIntervalSec(),
+                TimeUnit.SECONDS
+        );
+
+        // ── 8. Graceful shutdown ─────────────────────────────────────────────
+        Runtime.getRuntime().addShutdownHook(Thread.ofVirtual().unstarted(() -> {
             log.info("Shutting down Data Plane...");
-            // TODO: graceful shutdown — drain active transfers
+            scheduler.shutdown();
+            quicServer.shutdown();
+            cpAdapter.close();
+            prometheusServer.stop();
+            log.info("Data Plane stopped.");
         }));
 
-        // Block main thread
+        // ── 9. Block main thread ─────────────────────────────────────────────
+        log.info("Data Plane ready. Waiting for transfers...");
+        quicServer.awaitTermination();
+    }
+
+    private static void sendHeartbeat(ControlPlaneGrpcAdapter adapter, TransferEngine engine) {
         try {
-            Thread.currentThread().join();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            Runtime rt  = Runtime.getRuntime();
+            double  mem = 1.0 - ((double) rt.freeMemory() / rt.maxMemory());
+            double  cpu = com.sun.management.OperatingSystemMXBean.class.cast(
+                    java.lang.management.ManagementFactory.getOperatingSystemMXBean()
+            ).getCpuLoad();
+
+            adapter.sendHeartbeat(
+                    engine.activeCount(),
+                    cpu,
+                    mem,
+                    engine.totalBytesInFlight()
+            );
+        } catch (Exception e) {
+            LoggerFactory.getLogger(QanalDataPlaneMain.class)
+                    .warn("Heartbeat failed: {}", e.getMessage());
+        }
+    }
+
+    private static String resolvePublicHost(DataPlaneConfig cfg) {
+        String h = cfg.quic().host();
+        return "0.0.0.0".equals(h) || h.isEmpty() ? resolveLocalHostname() : h;
+    }
+
+    private static String resolveLocalHostname() {
+        try {
+            return java.net.InetAddress.getLocalHost().getHostAddress();
+        } catch (Exception e) {
+            return "127.0.0.1";
+        }
+    }
+
+    private static long availableDisk() {
+        try {
+            return java.nio.file.FileSystems.getDefault()
+                    .getFileStores().iterator().next()
+                    .getUsableSpace();
+        } catch (Exception e) {
+            return 0L;
         }
     }
 }

@@ -26,7 +26,7 @@ application {
 val nettyVersion = "4.1.115.Final"
 val quicVersion = "0.0.66.Final"
 val grpcVersion = "1.68.1"
-val protobufVersion = "4.28.3"
+val protobufVersion = "3.25.5"
 
 dependencies {
 
@@ -51,12 +51,14 @@ dependencies {
     implementation("io.grpc:grpc-netty-shaded:$grpcVersion")
     implementation("io.grpc:grpc-protobuf:$grpcVersion")
     implementation("io.grpc:grpc-stub:$grpcVersion")
+    implementation("com.google.protobuf:protobuf-java:$protobufVersion")
     compileOnly("org.apache.tomcat:annotations-api:6.0.53")
 
     // ═══════════════════════════════════════════
     //  Hashing & Crypto
     // ═══════════════════════════════════════════
     implementation("net.openhft:zero-allocation-hashing:0.16")  // xxHash64
+    implementation("org.lz4:lz4-java:1.8.0")                   // streaming xxHash64 for full-file verification
 
     // ═══════════════════════════════════════════
     //  Configuration
