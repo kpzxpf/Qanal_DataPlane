@@ -49,10 +49,35 @@ public final class TransferState {
         this.completedBitSet = new BitSet(totalChunks);
     }
 
-    public boolean markChunkDone(int index) {
+    /**
+     * Result of {@link #markChunkDone(int)}.
+     */
+    public enum ChunkMarkResult { DUPLICATE, IN_PROGRESS, ALL_DONE }
+
+    /**
+     * Marks a chunk as done. Returns:
+     * <ul>
+     *   <li>{@code DUPLICATE}   — chunk was already marked; caller must ignore it.</li>
+     *   <li>{@code IN_PROGRESS} — chunk newly marked; not all chunks done yet.</li>
+     *   <li>{@code ALL_DONE}    — chunk newly marked and all chunks are now complete.</li>
+     * </ul>
+     *
+     * <p>BUG-2 Fix: the duplicate-check prevents double-finalization when the same
+     * chunk arrives twice (application-level retry / QUIC retransmission).
+     * BUG-4 Fix: {@code completedChunks} is incremented inside the synchronized
+     * block so it stays consistent with the BitSet count and never exceeds
+     * {@code totalChunks}.
+     */
+    public ChunkMarkResult markChunkDone(int index) {
         synchronized (completedBitSet) {
+            if (completedBitSet.get(index)) {
+                return ChunkMarkResult.DUPLICATE;
+            }
             completedBitSet.set(index);
-            return completedBitSet.cardinality() >= totalChunks;
+            completedChunks.incrementAndGet();   // moved inside sync — consistent with BitSet
+            return completedBitSet.cardinality() >= totalChunks
+                    ? ChunkMarkResult.ALL_DONE
+                    : ChunkMarkResult.IN_PROGRESS;
         }
     }
 

@@ -55,8 +55,11 @@ message TransferFinalizedRequest {
 }
 
 message TransferFinalizedResponse {
-    bool   verified = 1;
-    string status = 2;
+    bool   verified             = 1;
+    string status               = 2;
+    string egress_host          = 3;
+    int32  egress_port          = 4;
+    int32  egress_download_port = 5;
 }
 
 // ── Progress streaming ──

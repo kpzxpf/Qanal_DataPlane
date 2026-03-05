@@ -159,14 +159,17 @@ public class ChunkReceiver extends SimpleChannelInboundHandler<ByteBuf> {
             String checksum   = hasher.hexDigest();
             long   duration   = Duration.between(startTime, Instant.now()).toMillis();
             double throughput = duration > 0
-                    ? (receivedBytes * 8.0 / duration) * 1000.0
+                    ? (receivedBytes * 8000.0) / duration   // bytes → bits/sec, single division
                     : 0.0;
+
+            // BUG-1 Fix: register the file BEFORE calling onChunkCompleted.
+            // If this is the last chunk, onChunkCompleted triggers finalizeTransfer →
+            // computeOrderedHash synchronously on this thread. The file must be in the
+            // map before that happens, otherwise the last chunk is missing from the hash.
+            state.registerChunkFile(header.chunkIndex(), tempFile);
 
             engine.onChunkCompleted(state, header.chunkIndex(), checksum,
                     receivedBytes, throughput, duration);
-
-            // Register temp file for ordered hash computation at finalization
-            state.registerChunkFile(header.chunkIndex(), tempFile);
 
         } catch (IOException e) {
             log.error("Error finalizing chunk {}/{}", header.chunkIndex(), header.transferId(), e);

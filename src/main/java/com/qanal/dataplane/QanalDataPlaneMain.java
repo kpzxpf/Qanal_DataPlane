@@ -1,7 +1,10 @@
 package com.qanal.dataplane;
 
+import com.qanal.dataplane.adapter.in.quic.DownloadServerBootstrap;
 import com.qanal.dataplane.adapter.in.quic.QuicServerBootstrap;
 import com.qanal.dataplane.adapter.out.grpc.ControlPlaneGrpcAdapter;
+import com.qanal.dataplane.adapter.out.quic.RelayForwarder;
+import com.qanal.dataplane.adapter.out.storage.LocalStorageAdapter;
 import com.qanal.dataplane.application.service.TransferEngine;
 import com.qanal.dataplane.infrastructure.config.DataPlaneConfig;
 import com.qanal.dataplane.infrastructure.metrics.PrometheusServer;
@@ -38,6 +41,7 @@ public class QanalDataPlaneMain {
         log.info("Agent:       {} / {}", cfg.agent().id(), cfg.agent().region());
         log.info("QUIC:        {}:{}", cfg.quic().host(), cfg.quic().port());
         log.info("Control:     {}:{}", cfg.controlPlane().host(), cfg.controlPlane().grpcPort());
+        log.info("Storage:     {} (download port: {})", cfg.storage().outputDir(), cfg.storage().downloadPort());
 
         // ── 2. Metrics ───────────────────────────────────────────────────────
         var prometheusServer = new PrometheusServer();
@@ -56,14 +60,20 @@ public class QanalDataPlaneMain {
         // ── 3. gRPC adapter ──────────────────────────────────────────────────
         var cpAdapter = new ControlPlaneGrpcAdapter(cfg.controlPlane(), cfg.agent());
 
-        // ── 4. Transfer engine ───────────────────────────────────────────────
-        var engine = new TransferEngine(cpAdapter, cfg, metrics);
+        // ── 4. Storage + relay ───────────────────────────────────────────────
+        var storage  = new LocalStorageAdapter(cfg.storage().outputDir());
+        var relayFwd = new RelayForwarder(cfg);
 
-        // ── 5. QUIC server ───────────────────────────────────────────────────
-        var quicServer = new QuicServerBootstrap(cfg, engine);
+        // ── 5. Transfer engine ───────────────────────────────────────────────
+        var engine = new TransferEngine(cpAdapter, storage, relayFwd, cfg, metrics);
+
+        // ── 6. QUIC servers ──────────────────────────────────────────────────
+        var quicServer     = new QuicServerBootstrap(cfg, engine, storage);
+        var downloadServer = new DownloadServerBootstrap(cfg, storage);
         quicServer.start();
+        downloadServer.start();
 
-        // ── 6. Agent registration ────────────────────────────────────────────
+        // ── 7. Agent registration ────────────────────────────────────────────
         cpAdapter.registerAgent(
                 resolvePublicHost(cfg),
                 cfg.quic().port(),
@@ -71,7 +81,7 @@ public class QanalDataPlaneMain {
                 availableDisk()
         );
 
-        // ── 7. Heartbeat scheduler ───────────────────────────────────────────
+        // ── 8. Heartbeat scheduler ───────────────────────────────────────────
         ScheduledExecutorService scheduler =
                 Executors.newSingleThreadScheduledExecutor(
                         r -> Thread.ofVirtual().name("heartbeat").unstarted(r));
@@ -83,17 +93,18 @@ public class QanalDataPlaneMain {
                 TimeUnit.SECONDS
         );
 
-        // ── 8. Graceful shutdown ─────────────────────────────────────────────
+        // ── 9. Graceful shutdown ─────────────────────────────────────────────
         Runtime.getRuntime().addShutdownHook(Thread.ofVirtual().unstarted(() -> {
             log.info("Shutting down Data Plane...");
             scheduler.shutdown();
+            downloadServer.shutdown();
             quicServer.shutdown();
             cpAdapter.close();
             prometheusServer.stop();
             log.info("Data Plane stopped.");
         }));
 
-        // ── 9. Block main thread ─────────────────────────────────────────────
+        // ── 10. Block main thread ────────────────────────────────────────────
         log.info("Data Plane ready. Waiting for transfers...");
         quicServer.awaitTermination();
     }

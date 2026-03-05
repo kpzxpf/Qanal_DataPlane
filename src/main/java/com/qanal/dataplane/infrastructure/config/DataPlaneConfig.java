@@ -12,6 +12,7 @@ public record DataPlaneConfig(
         TransferConfig     transfer,
         ControlPlaneConfig controlPlane,
         NettyConfig        netty,
+        StorageConfig      storage,
         MetricsConfig      metrics
 ) {
 
@@ -50,15 +51,21 @@ public record DataPlaneConfig(
             boolean useEpoll
     ) {}
 
+    public record StorageConfig(String outputDir, int downloadPort) {}
+
     public record MetricsConfig(boolean enabled, int prometheusPort) {}
 
     // ── Factory ─────────────────────────────────────────────────────────────
 
     public static DataPlaneConfig from(Config c) {
+        // BUG-13 Fix: use hasPath() so that missing optional env vars (${?AGENT_ID},
+        // ${?AGENT_REGION}) don't throw ConfigException.Missing at startup.
+        // application.conf provides defaults, but this guard covers any future
+        // config restructuring where the key might genuinely be absent.
         return new DataPlaneConfig(
                 new AgentConfig(
-                        c.getString("agent.id"),
-                        c.getString("agent.region")
+                        c.hasPath("agent.id")     ? c.getString("agent.id")     : "local-dev",
+                        c.hasPath("agent.region") ? c.getString("agent.region") : "local"
                 ),
                 new QuicConfig(
                         c.getString("quic.host"),
@@ -88,6 +95,10 @@ public record DataPlaneConfig(
                         c.getInt("netty.boss-threads"),
                         c.getInt("netty.worker-threads"),
                         c.getBoolean("netty.use-epoll")
+                ),
+                new StorageConfig(
+                        c.hasPath("storage.output-dir") ? c.getString("storage.output-dir") : "/tmp/qanal-storage",
+                        c.hasPath("storage.download-port") ? c.getInt("storage.download-port") : 4434
                 ),
                 new MetricsConfig(
                         c.getBoolean("metrics.enabled"),
